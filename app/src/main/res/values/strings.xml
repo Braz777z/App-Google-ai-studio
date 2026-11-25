@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Studio Portal</string>
+    <string name="nav_studio">Studio</string>
+    <string name="nav_apps">Build</string>
+    <string name="nav_apikeys">Clés API</string>
+    <string name="nav_library">Prompts</string>
+    <string name="nav_workspace">Espace</string>
+
+    <string name="action_back">Page précédente</string>
+    <string name="action_forward">Page suivante</string>
+    <string name="action_reload">Actualiser</string>
+    <string name="action_fullscreen">Mode plein écran</string>
+    <string name="action_exit_fullscreen">Quitter le plein écran</string>
+    <string name="action_desktop_mode">Version bureau</string>
+    <string name="action_mobile_mode">Version mobile</string>
+    <string name="action_pin_shortcut">Épingler cette page</string>
+    <string name="action_share_link">Copier le lien</string>
+    <string name="action_retry">Réessayer</string>
+    <string name="action_close">Fermer</string>
+
+    <string name="status_connected">Connecté en HTTPS</string>
+    <string name="status_loading">Chargement de Google AI Studio…</string>
+    <string name="status_offline_title">Connexion interrompue</string>
+    <string name="status_offline_body">Impossible de joindre Google AI Studio. Vérifiez votre accès Internet puis réessayez.</string>
+
+    <string name="workspace_sheet_title">Espace de travail</string>
+    <string name="workspace_shortcuts_section">Raccourcis rapides</string>
+    <string name="workspace_pinned_section">Pages épinglées</string>
+    <string name="workspace_display_section">Affichage et session</string>
+    <string name="workspace_desktop_title">Mode ordinateur</string>
+    <string name="workspace_desktop_subtitle">Affiche la vue complète avec panneau de code et paramètres de modèle</string>
+    <string name="workspace_immersive_title">Mode immersif</string>
+    <string name="workspace_immersive_subtitle">Masque les barres de l’application pour maximiser l’espace de travail</string>
+    <string name="workspace_zoom_label">Taille du texte</string>
+    <string name="workspace_theme_label">Apparence de l’interface</string>
+    <string name="workspace_theme_system">Système</string>
+    <string name="workspace_theme_dark">Sombre</string>
+    <string name="workspace_theme_light">Clair</string>
+    <string name="workspace_clear_cache">Vider le cache (conserve la session)</string>
+    <string name="workspace_clear_cookies">Réinitialiser la session Google</string>
+    <string name="workspace_pin_current">Épingler la page actuelle</string>
+    <string name="workspace_no_pinned">Aucune page épinglée pour le moment. Épinglez un prompt ou un projet pour y revenir en un geste.</string>
+
+    <string name="pin_dialog_title">Épingler un raccourci</string>
+    <string name="pin_dialog_label">Nom du raccourci</string>
+    <string name="pin_dialog_placeholder">Ex. : Assistant Kotlin, API Clés…</string>
+    <string name="pin_dialog_save">Enregistrer</string>
+    <string name="pin_dialog_cancel">Annuler</string>
+
+    <string name="oauth_dialog_title">Authentification et fenêtre</string>
+    <string name="mic_camera_rationale">Autorisez l’accès au micro ou à la caméra pour utiliser le mode temps réel dans AI Studio.</string>
+    <string name="download_started">Téléchargement démarré</string>
+    <string name="download_saved">Fichier enregistré dans Téléchargements : %1$s</string>
+    <string name="download_failed">Impossible de télécharger le fichier</string>
+    <string name="download_cross_origin_hint">Ouvrez cet aperçu dans une nouvelle fenêtre pour télécharger ce fichier.</string>
+    <string name="notification_downloads_channel_name">Téléchargements</string>
+    <string name="notification_downloads_channel_description">Confirmations des fichiers exportés depuis AI Studio</string>
+    <string name="notification_download_done_title">Téléchargement terminé</string>
+    <string name="link_copied">Lien copié dans le presse-papiers</string>
+    <string name="cache_cleared">Cache vidé</string>
+    <string name="session_reset">Session Google réinitialisée</string>
+
+    <string name="notification_channel_name">Fin de réflexion de l’agent</string>
+    <string name="notification_channel_description">Alerte lorsque Gemini a terminé de réfléchir et que la réponse est prête</string>
+    <string name="notification_agent_done_title">Réponse prête dans AI Studio</string>
+    <string name="notification_agent_done_body">L’agent a terminé sa réflexion. Appuyez pour ouvrir la réponse.</string>
+    <string name="notification_agent_done_body_with_time">Réflexion terminée en %1$d s. Appuyez pour consulter la réponse.</string>
+
+    <string name="workspace_notifications_section">Notifications</string>
+    <string name="workspace_notifications_title">Notifier fin de réflexion</string>
+    <string name="workspace_notifications_subtitle">Envoie une notification dès que l’agent termine sa réponse</string>
+    <string name="workspace_notify_bg_only_title">Uniquement en arrière-plan</string>
+    <string name="workspace_notify_bg_only_subtitle">Ne notifie que lorsque vous quittez l’application</string>
+    <string name="workspace_test_notification">Tester la notification</string>
+    <string name="notification_permission_denied">Autorisation de notification refusée dans les réglages Android</string>
+    <string name="notification_test_sent">Notification de test envoyée</string>
+
+    <string name="workspace_updates_section">Mises à jour</string>
+    <string name="workspace_updates_web_note">Google AI Studio se met à jour automatiquement sans recompiler. Utilisez ce bouton pour charger la toute dernière interface web en conservant votre session.</string>
+    <string name="workspace_refresh_web_app">Mettre à jour AI Studio (sans perte de session)</string>
+    <string name="workspace_update_repo_label">Dépôt GitHub des releases APK</string>
+    <string name="workspace_update_repo_placeholder">Ex. : monpseudo/studio-portal</string>
+    <string name="workspace_check_updates">Vérifier les MAJ</string>
+    <string name="workspace_checking_updates">Vérification…</string>
+    <string name="workspace_open_update">Télécharger la mise à jour (%1$s)</string>
+    <string name="workspace_up_to_date">Application à jour (version %1$s)</string>
+
+    <string name="compile_apk_title">Compiler un APK</string>
+    <string name="compile_apk_subtitle">Importer un projet .zip et signer avec votre keystore</string>
+    <string name="compile_dialog_title">Générer un APK signé</string>
+    <string name="compile_step_zip">1. Projet Android (.zip)</string>
+    <string name="compile_pick_zip">Importer le fichier .zip</string>
+    <string name="compile_zip_empty">Aucun projet importé</string>
+    <string name="compile_zip_summary">%1$s • %2$d fichiers</string>
+    <string name="compile_zip_valid">Projet Gradle + AndroidManifest détectés</string>
+    <string name="compile_zip_invalid">Attention : structure Gradle/AndroidManifest incomplète</string>
+    <string name="compile_step_signing">2. Signature (Keystore existant)</string>
+    <string name="compile_pick_keystore">Importer votre Keystore (.jks / .p12)</string>
+    <string name="compile_keystore_empty">Aucun keystore sélectionné</string>
+    <string name="compile_store_password">Mot de passe du Keystore</string>
+    <string name="compile_key_alias">Alias de la clé (Key alias)</string>
+    <string name="compile_key_password">Mot de passe de la clé (Key password)</string>
+    <string name="compile_step_server">3. Serveur de compilation Gradle</string>
+    <string name="compile_server_url_label">URL HTTPS du serveur de compilation</string>
+    <string name="compile_server_url_placeholder">https://build.mondomaine.com/compile</string>
+    <string name="compile_server_hint">Android ne pouvant pas exécuter Gradle/SDK localement, l’archive et la signature sont envoyées en HTTPS à votre compilateur Gradle.</string>
+    <string name="compile_toggle_script">Voir / copier le script serveur (Python + Gradle)</string>
+    <string name="compile_copy_script">Copier le script serveur</string>
+    <string name="compile_script_copied">Script serveur copié dans le presse-papiers</string>
+    <string name="compile_launch_button">Compiler et signer l’APK</string>
+    <string name="compile_in_progress">Compilation et signature en cours…</string>
+    <string name="compile_apk_saved">APK signé enregistré dans Téléchargements : %1$s</string>
+    <string name="compile_save_apk_fallback">Enregistrer l’APK (%1$s)</string>
+</resources>

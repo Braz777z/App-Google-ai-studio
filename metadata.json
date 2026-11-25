@@ -1,0 +1,6 @@
+{
+  "name": "Studio Portal",
+  "description": "Application Android dédiée pour accéder directement à Google AI Studio sans navigateur, avec raccourcis rapides, mode bureau, gestion de session et téléversement de fichiers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
