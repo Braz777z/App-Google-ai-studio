@@ -1,0 +1,109 @@
+workflows:
+  android-debug-apk:
+    name: Build Debug APK (Ready Out-of-the-Box)
+    max_build_duration: 45
+    instance_type: linux_x2
+    environment:
+      java: 21
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+    scripts:
+      - name: Prepare Android SDK 36 & debug keystore
+        script: |
+          set -e
+          SDK_BIN="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDK_BIN" ]; then
+            SDK_BIN="$(command -v sdkmanager)"
+          fi
+          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          "$SDK_BIN" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || \
+            "$SDK_BIN" "platforms;android-36" "build-tools;36.0.0"
+
+          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
+          [ -f ".env" ] || touch .env
+
+          if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+      - name: Run unit tests & build Debug APK
+        script: |
+          set -e
+          if [ -x "./gradlew" ]; then
+            GRADLE_CMD="./gradlew"
+          else
+            curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+            unzip -q -o /tmp/gradle.zip -d /tmp/gradle-dist
+            GRADLE_CMD="/tmp/gradle-dist/gradle-9.3.1/bin/gradle"
+          fi
+          "$GRADLE_CMD" --no-daemon :app:testDebugUnitTest --tests com.example.ExampleUnitTest
+          "$GRADLE_CMD" --no-daemon :app:assembleDebug
+    artifacts:
+      - app/build/outputs/apk/debug/*.apk
+
+  android-release-apk:
+    name: Build Signed Release APK & AAB
+    max_build_duration: 60
+    instance_type: linux_x2
+    environment:
+      java: 21
+      # Dans Codemagic > Environment variables, créez le groupe "signing" avec :
+      #   KEYSTORE_BASE64 (votre fichier .jks encodé en base64)
+      #   STORE_PASSWORD
+      #   KEY_PASSWORD
+      # (Note : app/build.gradle.kts utilise keyAlias = "upload")
+      groups:
+        - signing
+    scripts:
+      - name: Prepare Android SDK 36, Gradle 9.3.1 & keystores
+        script: |
+          set -e
+          SDK_BIN="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDK_BIN" ]; then
+            SDK_BIN="$(command -v sdkmanager)"
+          fi
+          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          "$SDK_BIN" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || \
+            "$SDK_BIN" "platforms;android-36" "build-tools;36.0.0"
+
+          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
+          [ -f ".env" ] || touch .env
+
+          if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
+            base64 -d debug.keystore.base64 > debug.keystore
+          fi
+
+          if [ -n "${CM_KEYSTORE_PATH:-}" ]; then
+            echo "KEYSTORE_PATH=$CM_KEYSTORE_PATH" >> "$CM_ENV"
+            echo "STORE_PASSWORD=$CM_KEYSTORE_PASSWORD" >> "$CM_ENV"
+            echo "KEY_PASSWORD=$CM_KEY_PASSWORD" >> "$CM_ENV"
+          elif [ -n "${KEYSTORE_BASE64:-}" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$CM_BUILD_DIR/my-upload-key.jks"
+            echo "KEYSTORE_PATH=$CM_BUILD_DIR/my-upload-key.jks" >> "$CM_ENV"
+          elif [ ! -f "my-upload-key.jks" ]; then
+            echo "ERREUR : Aucun keystore Release trouvé."
+            echo "Ajoutez KEYSTORE_BASE64, STORE_PASSWORD et KEY_PASSWORD dans le groupe 'signing' sur Codemagic."
+            exit 1
+          fi
+
+      - name: Run unit tests & build signed Release APK + AAB
+        script: |
+          set -e
+          if [ -x "./gradlew" ]; then
+            GRADLE_CMD="./gradlew"
+          else
+            curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+            unzip -q -o /tmp/gradle.zip -d /tmp/gradle-dist
+            GRADLE_CMD="/tmp/gradle-dist/gradle-9.3.1/bin/gradle"
+          fi
+          "$GRADLE_CMD" --no-daemon :app:testDebugUnitTest --tests com.example.ExampleUnitTest
+          "$GRADLE_CMD" --no-daemon :app:assembleRelease :app:bundleRelease
+    artifacts:
+      - app/build/outputs/apk/release/*.apk
+      - app/build/outputs/bundle/release/*.aab
+      - app/build/outputs/**/mapping.txt
