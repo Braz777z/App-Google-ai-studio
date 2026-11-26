@@ -62,6 +62,7 @@ import com.example.notifications.StudioNotificationHelper
 import com.example.ui.StudioViewModel
 import com.example.ui.components.CompileApkDialog
 import com.example.ui.components.ImmersiveFloatingPill
+import com.example.ui.components.KeystoreVaultDialog
 import com.example.ui.components.PinShortcutDialog
 import com.example.ui.components.StudioBottomBar
 import com.example.ui.components.StudioErrorOverlay
@@ -165,6 +166,29 @@ fun StudioPortalRoot(
                     viewModel.clearPendingCompiledApk()
                     viewModel.showStatusMessage(
                         context.getString(R.string.compile_apk_saved, compiled.fileName)
+                    )
+                }
+            }
+        }
+    }
+
+    var pendingExportJks by remember { mutableStateOf<Pair<String, ByteArray>?>(null) }
+    val jksExportSafLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/x-pkcs12")
+    ) { uri ->
+        val pending = pendingExportJks
+        pendingExportJks = null
+        if (uri != null && pending != null) {
+            coroutineScope.launch {
+                val ok = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri)?.use { it.write(pending.second) }
+                        true
+                    }.getOrDefault(false)
+                }
+                if (ok) {
+                    viewModel.showStatusMessage(
+                        context.getString(R.string.vault_exported_jks, pending.first)
                     )
                 }
             }
@@ -383,6 +407,10 @@ fun StudioPortalRoot(
                         viewModel.setWorkspaceSheetOpen(false)
                         viewModel.setCompileDialogOpen(true)
                     },
+                    onOpenVaultDialog = {
+                        viewModel.setWorkspaceSheetOpen(false)
+                        viewModel.setVaultDialogOpen(true)
+                    },
                     onCopyCurrentLink = {
                         copyTextToClipboard(context, uiState.currentUrl)
                         viewModel.showStatusMessage(context.getString(R.string.link_copied))
@@ -405,6 +433,7 @@ fun StudioPortalRoot(
                     selectedZip = uiState.selectedProjectZip,
                     zipError = uiState.zipSelectionError,
                     keystoreInspection = uiState.selectedKeystoreInspection,
+                    savedProfiles = uiState.savedKeystoreProfiles,
                     compileState = uiState.compileState,
                     hasPendingApkSave = uiState.pendingCompiledApk != null,
                     onDismiss = { viewModel.setCompileDialogOpen(false) },
@@ -419,6 +448,7 @@ fun StudioPortalRoot(
                         pendingKeyPass = keyPass
                         keystorePickerLauncher.launch(arrayOf("*/*"))
                     },
+                    onApplySavedProfile = viewModel::applySavedKeystoreProfile,
                     onInspectKeystore = { storePass, alias, keyPass ->
                         viewModel.refreshKeystoreInspection(
                             storePassword = storePass,
@@ -430,16 +460,22 @@ fun StudioPortalRoot(
                         copyTextToClipboard(context, ApkCompilerClient.BUILD_RUNNER_INFO)
                         viewModel.showStatusMessage(context.getString(R.string.compile_script_copied))
                     },
-                    onCompile = { serverUrl, storePass, keyAlias, keyPass ->
+                    onCompile = { serverUrl, storePass, keyAlias, keyPass, rememberKeystore ->
                         viewModel.compileSignedApk(
                             serverUrl = serverUrl,
                             storePassword = storePass,
                             keyAlias = keyAlias,
-                            keyPassword = keyPass
+                            keyPassword = keyPass,
+                            rememberKeystore = rememberKeystore
                         ) { compiled ->
                             coroutineScope.launch {
                                 val saved = withContext(Dispatchers.IO) {
-                                    saveApkToDownloads(context, compiled.fileName, compiled.apkBytes)
+                                    saveFileToDownloads(
+                                        context = context,
+                                        fileName = compiled.fileName,
+                                        mimeType = "application/vnd.android.package-archive",
+                                        bytes = compiled.apkBytes
+                                    )
                                 }
                                 if (saved) {
                                     viewModel.clearPendingCompiledApk()
@@ -455,6 +491,57 @@ fun StudioPortalRoot(
                     onSaveApkFallback = {
                         uiState.pendingCompiledApk?.let { apkSaveLauncher.launch(it.fileName) }
                     }
+                )
+            }
+
+            if (uiState.isVaultDialogOpen) {
+                KeystoreVaultDialog(
+                    savedProfiles = uiState.savedKeystoreProfiles,
+                    draftKeystoreInspection = uiState.selectedKeystoreInspection,
+                    onDismiss = { viewModel.setVaultDialogOpen(false) },
+                    onPickKeystore = { storePass, alias, keyPass ->
+                        pendingKsPass = storePass
+                        pendingKeyAlias = alias
+                        pendingKeyPass = keyPass
+                        keystorePickerLauncher.launch(arrayOf("*/*"))
+                    },
+                    onInspectDraftKeystore = { storePass, alias, keyPass ->
+                        viewModel.refreshKeystoreInspection(
+                            storePassword = storePass,
+                            alias = alias,
+                            keyPassword = keyPass
+                        )
+                    },
+                    onSaveProfile = viewModel::saveKeystoreToVault,
+                    onCopyField = { fieldName, value ->
+                        copyTextToClipboard(context, value)
+                        viewModel.showStatusMessage(
+                            context.getString(R.string.vault_copied_field, fieldName)
+                        )
+                    },
+                    onExportKeystore = { profile ->
+                        viewModel.loadSavedKeystoreForExport(profile) { jksBytes ->
+                            coroutineScope.launch {
+                                val saved = withContext(Dispatchers.IO) {
+                                    saveFileToDownloads(
+                                        context = context,
+                                        fileName = profile.fileName,
+                                        mimeType = "application/x-pkcs12",
+                                        bytes = jksBytes
+                                    )
+                                }
+                                if (saved) {
+                                    viewModel.showStatusMessage(
+                                        context.getString(R.string.vault_exported_jks, profile.fileName)
+                                    )
+                                } else {
+                                    pendingExportJks = profile.fileName to jksBytes
+                                    jksExportSafLauncher.launch(profile.fileName)
+                                }
+                            }
+                        }
+                    },
+                    onDeleteProfile = viewModel::deleteSavedKeystoreProfile
                 )
             }
 
@@ -511,18 +598,23 @@ private fun readBoundedBytesFromUri(
     fileName to bytes
 }
 
-private fun saveApkToDownloads(context: Context, fileName: String, apkBytes: ByteArray): Boolean {
+private fun saveFileToDownloads(
+    context: Context,
+    fileName: String,
+    mimeType: String,
+    bytes: ByteArray
+): Boolean {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false
     return try {
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
-            put(MediaStore.MediaColumns.MIME_TYPE, "application/vnd.android.package-archive")
+            put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
             put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
             put(MediaStore.MediaColumns.IS_PENDING, 1)
         }
         val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
-        resolver.openOutputStream(uri)?.use { it.write(apkBytes) } ?: return false
+        resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
         resolver.update(
             uri,
             ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) },

@@ -10,6 +10,8 @@ import com.example.compiler.ApkCompilerClient
 import com.example.compiler.CompiledApkResult
 import com.example.compiler.InspectedProjectZip
 import com.example.compiler.KeystoreInspection
+import com.example.compiler.KeystoreVault
+import com.example.compiler.SavedKeystoreProfile
 import com.example.data.PinnedShortcut
 import com.example.data.StudioPreferences
 import com.example.data.StudioPreferencesRepository
@@ -58,6 +60,8 @@ data class StudioUiState(
     val isWorkspaceSheetOpen: Boolean = false,
     val isPinDialogOpen: Boolean = false,
     val isCompileDialogOpen: Boolean = false,
+    val isVaultDialogOpen: Boolean = false,
+    val savedKeystoreProfiles: List<SavedKeystoreProfile> = emptyList(),
     val selectedProjectZip: InspectedProjectZip? = null,
     val zipSelectionError: String? = null,
     val selectedKeystoreInspection: KeystoreInspection? = null,
@@ -101,12 +105,14 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         StudioNotificationHelper.ensureNotificationChannel(application.applicationContext)
         viewModelScope.launch {
             val initialPrefs = repository.preferencesFlow.first()
+            val savedProfiles = KeystoreVault.listProfiles(application.applicationContext)
             internalState.update {
                 it.copy(
                     isReady = true,
                     initialUrl = initialPrefs.lastUrl,
                     currentUrl = initialPrefs.lastUrl,
-                    activeSection = StudioSection.matchFromUrl(initialPrefs.lastUrl) ?: StudioSection.STUDIO
+                    activeSection = StudioSection.matchFromUrl(initialPrefs.lastUrl) ?: StudioSection.STUDIO,
+                    savedKeystoreProfiles = savedProfiles
                 )
             }
         }
@@ -257,19 +263,40 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     fun setCompileDialogOpen(open: Boolean) {
         if (!open) {
             selectedZipBytes = null
-            selectedKeystoreBytes = null
+            if (!internalState.value.isVaultDialogOpen) {
+                selectedKeystoreBytes = null
+            }
             internalState.update {
                 it.copy(
                     isCompileDialogOpen = false,
                     selectedProjectZip = null,
                     zipSelectionError = null,
-                    selectedKeystoreInspection = null,
+                    selectedKeystoreInspection = if (it.isVaultDialogOpen) it.selectedKeystoreInspection else null,
                     compileState = ApkCompileState.Idle,
                     pendingCompiledApk = null
                 )
             }
         } else {
             internalState.update { it.copy(isCompileDialogOpen = true) }
+        }
+    }
+
+    fun setVaultDialogOpen(open: Boolean) {
+        if (!open) {
+            if (!internalState.value.isCompileDialogOpen) {
+                selectedKeystoreBytes = null
+            }
+            internalState.update {
+                it.copy(
+                    isVaultDialogOpen = false,
+                    selectedKeystoreInspection = if (it.isCompileDialogOpen) it.selectedKeystoreInspection else null
+                )
+            }
+        } else {
+            internalState.update {
+                it.copy(isVaultDialogOpen = true, selectedKeystoreInspection = null)
+            }
+            selectedKeystoreBytes = null
         }
     }
 
@@ -337,11 +364,89 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
         internalState.update { it.copy(selectedKeystoreInspection = inspection) }
     }
 
+    fun applySavedKeystoreProfile(profile: SavedKeystoreProfile) {
+        val ctx = getApplication<Application>().applicationContext
+        viewModelScope.launch {
+            val res = KeystoreVault.loadKeystoreBytes(ctx, profile.id)
+            res.onSuccess { bytes ->
+                onKeystoreLoaded(
+                    bytes = bytes,
+                    fileName = profile.fileName,
+                    storePassword = profile.storePassword,
+                    alias = profile.keyAlias,
+                    keyPassword = profile.keyPassword
+                )
+            }.onFailure { err ->
+                showStatusMessage(err.message ?: "Impossible de déchiffrer le keystore.")
+            }
+        }
+    }
+
+    fun saveKeystoreToVault(
+        label: String,
+        storePassword: String,
+        keyAlias: String,
+        keyPassword: String
+    ) {
+        val bytes = selectedKeystoreBytes ?: return
+        val fileName = internalState.value.selectedKeystoreInspection?.fileName ?: "keystore.jks"
+        val ctx = getApplication<Application>().applicationContext
+        viewModelScope.launch {
+            val res = KeystoreVault.saveProfile(
+                context = ctx,
+                label = label,
+                fileName = fileName,
+                keystoreBytes = bytes,
+                storePassword = storePassword,
+                keyAlias = keyAlias,
+                keyPassword = keyPassword
+            )
+            res.onSuccess { saved ->
+                val updatedList = KeystoreVault.listProfiles(ctx)
+                selectedKeystoreBytes = null
+                internalState.update {
+                    it.copy(
+                        savedKeystoreProfiles = updatedList,
+                        selectedKeystoreInspection = null
+                    )
+                }
+                showStatusMessage(ctx.getString(R.string.vault_saved_banner, saved.label))
+            }.onFailure { err ->
+                showStatusMessage(err.message ?: "Impossible d’enregistrer le keystore.")
+            }
+        }
+    }
+
+    fun deleteSavedKeystoreProfile(profileId: String) {
+        val ctx = getApplication<Application>().applicationContext
+        viewModelScope.launch {
+            KeystoreVault.deleteProfile(ctx, profileId)
+            val updatedList = KeystoreVault.listProfiles(ctx)
+            internalState.update { it.copy(savedKeystoreProfiles = updatedList) }
+            showStatusMessage(ctx.getString(R.string.vault_deleted_banner))
+        }
+    }
+
+    fun loadSavedKeystoreForExport(
+        profile: SavedKeystoreProfile,
+        onReady: (ByteArray) -> Unit
+    ) {
+        val ctx = getApplication<Application>().applicationContext
+        viewModelScope.launch {
+            KeystoreVault.loadKeystoreBytes(ctx, profile.id)
+                .onSuccess(onReady)
+                .onFailure { err ->
+                    showStatusMessage(err.message ?: "Impossible d’exporter le keystore.")
+                }
+        }
+    }
+
     fun compileSignedApk(
         serverUrl: String,
         storePassword: String,
         keyAlias: String,
         keyPassword: String,
+        rememberKeystore: Boolean,
         onApkCompiled: (CompiledApkResult) -> Unit
     ) {
         val zipBytes = selectedZipBytes
@@ -369,8 +474,22 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
             )
         }
 
+        val ctx = getApplication<Application>().applicationContext
         viewModelScope.launch {
             repository.setBuildServerUrl(cleanServerUrl)
+            if (rememberKeystore) {
+                KeystoreVault.saveProfile(
+                    context = ctx,
+                    label = ksMeta.fileName.substringBeforeLast('.'),
+                    fileName = ksMeta.fileName,
+                    keystoreBytes = ksBytes,
+                    storePassword = storePassword,
+                    keyAlias = keyAlias,
+                    keyPassword = keyPassword
+                )
+                val updatedList = KeystoreVault.listProfiles(ctx)
+                internalState.update { it.copy(savedKeystoreProfiles = updatedList) }
+            }
             val result = ApkCompilerClient.compileSignedApk(
                 serverUrl = cleanServerUrl,
                 zipBytes = zipBytes,

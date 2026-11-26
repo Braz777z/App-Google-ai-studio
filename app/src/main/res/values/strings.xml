@@ -112,4 +112,22 @@
     <string name="compile_in_progress">Compilation et signature en cours…</string>
     <string name="compile_apk_saved">APK signé enregistré dans Téléchargements : %1$s</string>
     <string name="compile_save_apk_fallback">Enregistrer l’APK (%1$s)</string>
+    <string name="compile_saved_keystores_label">Keystores mémorisés :</string>
+    <string name="compile_remember_keystore">Mémoriser ce .jks et ces codes (chiffré)</string>
+
+    <string name="vault_title">Keystores &amp; codes mémorisés</string>
+    <string name="vault_subtitle">Sauvegarde chiffrée de vos .jks, alias et mots de passe pour Android Studio</string>
+    <string name="vault_dialog_title">Coffre Keystore (.jks)</string>
+    <string name="vault_empty">Aucun keystore mémorisé. Importez votre .jks ci-dessous pour retrouver vos codes à tout moment.</string>
+    <string name="vault_add_section">Ajouter un .jks et ses codes</string>
+    <string name="vault_label_input">Nom (ex. : Clé Release Play Store)</string>
+    <string name="vault_save_button">Mémoriser dans le coffre chiffré</string>
+    <string name="vault_saved_banner">Keystore « %1$s » mémorisé de façon chiffrée</string>
+    <string name="vault_deleted_banner">Keystore supprimé du coffre</string>
+    <string name="vault_exported_jks">Fichier .jks enregistré dans Téléchargements : %1$s</string>
+    <string name="vault_show_codes">Afficher les codes</string>
+    <string name="vault_hide_codes">Masquer les codes</string>
+    <string name="vault_export_jks">Récupérer le .jks</string>
+    <string name="vault_delete">Supprimer</string>
+    <string name="vault_copied_field">%1$s copié dans le presse-papiers</string>
 </resources>

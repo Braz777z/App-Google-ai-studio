@@ -43,7 +43,7 @@ class StudioPreferencesRepository(private val context: Context) {
             pinnedShortcuts = decodeShortcuts(prefs[Keys.PINNED_SHORTCUTS]),
             notificationsEnabled = prefs[Keys.NOTIFICATIONS_ENABLED] ?: true,
             notifyOnlyInBackground = prefs[Keys.NOTIFY_ONLY_BG] ?: false,
-            updateRepoSlug = prefs[Keys.UPDATE_REPO_SLUG] ?: "Braz77z/App-Google-ai-studio",
+            updateRepoSlug = prefs[Keys.UPDATE_REPO_SLUG] ?: "Braz777z/App-Google-ai-studio",
             buildServerUrl = prefs[Keys.BUILD_SERVER_URL] ?: ""
         )
     }

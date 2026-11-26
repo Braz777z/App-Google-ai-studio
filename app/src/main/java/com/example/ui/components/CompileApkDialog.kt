@@ -30,6 +30,7 @@ import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
@@ -63,6 +64,7 @@ import com.example.R
 import com.example.compiler.ApkCompileState
 import com.example.compiler.InspectedProjectZip
 import com.example.compiler.KeystoreInspection
+import com.example.compiler.SavedKeystoreProfile
 
 @Composable
 fun CompileApkDialog(
@@ -70,20 +72,29 @@ fun CompileApkDialog(
     selectedZip: InspectedProjectZip?,
     zipError: String?,
     keystoreInspection: KeystoreInspection?,
+    savedProfiles: List<SavedKeystoreProfile>,
     compileState: ApkCompileState,
     hasPendingApkSave: Boolean,
     onDismiss: () -> Unit,
     onPickZip: () -> Unit,
     onPickKeystore: (storePassword: String, alias: String, keyPassword: String) -> Unit,
+    onApplySavedProfile: (SavedKeystoreProfile) -> Unit,
     onInspectKeystore: (storePassword: String, alias: String, keyPassword: String) -> Unit,
     onCopyServerScript: () -> Unit,
-    onCompile: (serverUrl: String, storePassword: String, keyAlias: String, keyPassword: String) -> Unit,
+    onCompile: (
+        serverUrl: String,
+        storePassword: String,
+        keyAlias: String,
+        keyPassword: String,
+        rememberKeystore: Boolean
+    ) -> Unit,
     onSaveApkFallback: () -> Unit
 ) {
     var storePassword by remember { mutableStateOf("") }
     var keyAlias by remember { mutableStateOf("") }
     var keyPassword by remember { mutableStateOf("") }
     var serverUrl by remember(initialServerUrl) { mutableStateOf(initialServerUrl) }
+    var rememberKeystore by remember { mutableStateOf(true) }
 
     var showStorePass by remember { mutableStateOf(false) }
     var showKeyPass by remember { mutableStateOf(false) }
@@ -224,6 +235,34 @@ fun CompileApkDialog(
 
                 // 2. Android Studio-style Keystore signing fields
                 SectionCard(title = stringResource(R.string.compile_step_signing)) {
+                    if (savedProfiles.isNotEmpty()) {
+                        Text(
+                            text = stringResource(R.string.compile_saved_keystores_label),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            savedProfiles.forEach { profile ->
+                                AssistChip(
+                                    onClick = {
+                                        storePassword = profile.storePassword
+                                        keyAlias = profile.keyAlias
+                                        keyPassword = profile.keyPassword
+                                        rememberKeystore = false
+                                        onApplySavedProfile(profile)
+                                    },
+                                    label = { Text("${profile.label} (${profile.keyAlias})") },
+                                    modifier = Modifier.testTag("saved_keystore_chip_${profile.id}")
+                                )
+                            }
+                        }
+                    }
+
                     FilledTonalButton(
                         onClick = { onPickKeystore(storePassword, keyAlias, keyPassword) },
                         enabled = !isCompiling,
@@ -361,6 +400,22 @@ fun CompileApkDialog(
                             .fillMaxWidth()
                             .testTag("compile_key_password_input")
                     )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = rememberKeystore,
+                            onCheckedChange = { rememberKeystore = it },
+                            enabled = !isCompiling,
+                            modifier = Modifier.testTag("compile_remember_keystore_checkbox")
+                        )
+                        Text(
+                            text = stringResource(R.string.compile_remember_keystore),
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
 
                 // 3. Remote Gradle compiler endpoint
@@ -422,7 +477,7 @@ fun CompileApkDialog(
 
                 Button(
                     onClick = {
-                        onCompile(serverUrl, storePassword, keyAlias, keyPassword)
+                        onCompile(serverUrl, storePassword, keyAlias, keyPassword, rememberKeystore)
                     },
                     enabled = canSubmit,
                     modifier = Modifier

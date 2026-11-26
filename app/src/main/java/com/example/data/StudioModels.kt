@@ -115,6 +115,6 @@ data class StudioPreferences(
     val pinnedShortcuts: List<PinnedShortcut> = emptyList(),
     val notificationsEnabled: Boolean = true,
     val notifyOnlyInBackground: Boolean = false,
-    val updateRepoSlug: String = "Braz77z/App-Google-ai-studio",
+    val updateRepoSlug: String = "Braz777z/App-Google-ai-studio",
     val buildServerUrl: String = ""
 )
