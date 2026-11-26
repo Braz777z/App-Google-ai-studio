@@ -1,8 +1,8 @@
 workflows:
   android-debug-apk:
-    name: Build Debug APK (Ready Out-of-the-Box)
-    max_build_duration: 45
-    instance_type: linux_x2
+    name: Build Debug APK
+    max_build_duration: 60
+    instance_type: mac_mini_m2
     environment:
       java: 21
     triggering:
@@ -16,19 +16,39 @@ workflows:
       - name: Prepare Android SDK 36 & debug keystore
         script: |
           set -e
-          SDK_BIN="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDK_BIN" ]; then
-            SDK_BIN="$(command -v sdkmanager)"
-          fi
-          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
-          "$SDK_BIN" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || \
-            "$SDK_BIN" "platforms;android-36" "build-tools;36.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/share/android-sdk}}"
+          SDK_BIN=""
+          for candidate in \
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_ROOT/tools/bin/sdkmanager" \
+            "$(command -v sdkmanager 2>/dev/null || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDK_BIN="$candidate"
+              break
+            fi
+          done
 
-          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
+          if [ -z "$SDK_BIN" ]; then
+            echo "ERREUR : sdkmanager introuvable sous $SDK_ROOT"
+            exit 1
+          fi
+
+          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          "$SDK_BIN" "cmdline-tools;latest" >/dev/null 2>&1 || true
+          LATEST_SDK_BIN="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$LATEST_SDK_BIN" ]; then
+            SDK_BIN="$LATEST_SDK_BIN"
+            yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          fi
+
+          "$SDK_BIN" "platform-tools" "build-tools;36.0.0" "platforms;android-36" "platforms;android-36.1" || \
+            "$SDK_BIN" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
+
+          echo "sdk.dir=$SDK_ROOT" > local.properties
           [ -f ".env" ] || touch .env
 
           if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            python3 -c "import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < debug.keystore.base64 > debug.keystore
           fi
 
       - name: Run unit tests & build Debug APK
@@ -36,8 +56,10 @@ workflows:
           set -e
           if [ -x "./gradlew" ]; then
             GRADLE_CMD="./gradlew"
+          elif command -v gradle >/dev/null 2>&1 && gradle --version | grep -q "Gradle 9\."; then
+            GRADLE_CMD="gradle"
           else
-            curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+            curl -fSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
             unzip -q -o /tmp/gradle.zip -d /tmp/gradle-dist
             GRADLE_CMD="/tmp/gradle-dist/gradle-9.3.1/bin/gradle"
           fi
@@ -49,33 +71,51 @@ workflows:
   android-release-apk:
     name: Build Signed Release APK & AAB
     max_build_duration: 60
-    instance_type: linux_x2
+    instance_type: mac_mini_m2
     environment:
       java: 21
       # Dans Codemagic > Environment variables, créez le groupe "signing" avec :
-      #   KEYSTORE_BASE64 (votre fichier .jks encodé en base64)
-      #   STORE_PASSWORD
-      #   KEY_PASSWORD
-      # (Note : app/build.gradle.kts utilise keyAlias = "upload")
+      #   KEYSTORE_BASE64, STORE_PASSWORD, KEY_PASSWORD
+      # (app/build.gradle.kts utilise keyAlias = "upload")
       groups:
         - signing
     scripts:
-      - name: Prepare Android SDK 36, Gradle 9.3.1 & keystores
+      - name: Prepare Android SDK 36 & keystores
         script: |
           set -e
-          SDK_BIN="${ANDROID_SDK_ROOT:-$ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          if [ ! -x "$SDK_BIN" ]; then
-            SDK_BIN="$(command -v sdkmanager)"
-          fi
-          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
-          "$SDK_BIN" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0" || \
-            "$SDK_BIN" "platforms;android-36" "build-tools;36.0.0"
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/share/android-sdk}}"
+          SDK_BIN=""
+          for candidate in \
+            "$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager" \
+            "$SDK_ROOT/tools/bin/sdkmanager" \
+            "$(command -v sdkmanager 2>/dev/null || true)"; do
+            if [ -n "$candidate" ] && [ -x "$candidate" ]; then
+              SDK_BIN="$candidate"
+              break
+            fi
+          done
 
-          echo "sdk.dir=${ANDROID_SDK_ROOT:-$ANDROID_HOME}" > local.properties
+          if [ -z "$SDK_BIN" ]; then
+            echo "ERREUR : sdkmanager introuvable sous $SDK_ROOT"
+            exit 1
+          fi
+
+          yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          "$SDK_BIN" "cmdline-tools;latest" >/dev/null 2>&1 || true
+          LATEST_SDK_BIN="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$LATEST_SDK_BIN" ]; then
+            SDK_BIN="$LATEST_SDK_BIN"
+            yes | "$SDK_BIN" --licenses >/dev/null 2>&1 || true
+          fi
+
+          "$SDK_BIN" "platform-tools" "build-tools;36.0.0" "platforms;android-36" "platforms;android-36.1" || \
+            "$SDK_BIN" "platform-tools" "build-tools;36.0.0" "platforms;android-36"
+
+          echo "sdk.dir=$SDK_ROOT" > local.properties
           [ -f ".env" ] || touch .env
 
           if [ -f "debug.keystore.base64" ] && [ ! -f "debug.keystore" ]; then
-            base64 -d debug.keystore.base64 > debug.keystore
+            python3 -c "import base64, sys; sys.stdout.buffer.write(base64.b64decode(sys.stdin.read()))" < debug.keystore.base64 > debug.keystore
           fi
 
           if [ -n "${CM_KEYSTORE_PATH:-}" ]; then
@@ -83,7 +123,7 @@ workflows:
             echo "STORE_PASSWORD=$CM_KEYSTORE_PASSWORD" >> "$CM_ENV"
             echo "KEY_PASSWORD=$CM_KEY_PASSWORD" >> "$CM_ENV"
           elif [ -n "${KEYSTORE_BASE64:-}" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$CM_BUILD_DIR/my-upload-key.jks"
+            python3 -c "import base64, os, sys; sys.stdout.buffer.write(base64.b64decode(os.environ['KEYSTORE_BASE64']))" > "$CM_BUILD_DIR/my-upload-key.jks"
             echo "KEYSTORE_PATH=$CM_BUILD_DIR/my-upload-key.jks" >> "$CM_ENV"
           elif [ ! -f "my-upload-key.jks" ]; then
             echo "ERREUR : Aucun keystore Release trouvé."
@@ -96,8 +136,10 @@ workflows:
           set -e
           if [ -x "./gradlew" ]; then
             GRADLE_CMD="./gradlew"
+          elif command -v gradle >/dev/null 2>&1 && gradle --version | grep -q "Gradle 9\."; then
+            GRADLE_CMD="gradle"
           else
-            curl -sSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
+            curl -fSL -o /tmp/gradle.zip "https://services.gradle.org/distributions/gradle-9.3.1-bin.zip"
             unzip -q -o /tmp/gradle.zip -d /tmp/gradle-dist
             GRADLE_CMD="/tmp/gradle-dist/gradle-9.3.1/bin/gradle"
           fi
