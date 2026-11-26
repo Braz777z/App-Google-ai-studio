@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/studio_s_neon_icon"
+        android:drawable="@drawable/studio_s_icon"
         android:gravity="center" />
 </layer-list>
