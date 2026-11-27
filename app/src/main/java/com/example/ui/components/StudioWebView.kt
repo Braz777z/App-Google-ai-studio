@@ -2,12 +2,15 @@ package com.example.ui.components
 
 import android.Manifest
 import android.annotation.SuppressLint
-import android.app.DownloadManager
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -33,6 +36,8 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.Keep
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -78,10 +83,16 @@ import com.example.data.StudioSection
 import com.example.notifications.StudioNotificationHelper
 import com.example.ui.WebCommand
 import kotlinx.coroutines.flow.SharedFlow
-import java.io.ByteArrayOutputStream
+import org.json.JSONObject
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 private const val MOBILE_CHROME_USER_AGENT =
@@ -90,7 +101,198 @@ private const val MOBILE_CHROME_USER_AGENT =
 private const val DESKTOP_CHROME_USER_AGENT =
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.6778.200 Safari/537.36"
 
+private const val MAX_DOWNLOAD_BYTES = 200L * 1024L * 1024L
+
 private val ioExecutor = Executors.newCachedThreadPool()
+
+private val DOWNLOAD_INTERCEPTOR_JS = """
+(function() {
+  if (window.__spDownloadHookInstalled) return;
+  window.__spDownloadHookInstalled = true;
+
+  var blobStore = new Map();
+  var maxBlobs = 30;
+  var origCreateObjectURL = URL.createObjectURL ? URL.createObjectURL.bind(URL) : null;
+  var origRevokeObjectURL = URL.revokeObjectURL ? URL.revokeObjectURL.bind(URL) : null;
+
+  if (origCreateObjectURL) {
+    URL.createObjectURL = function(obj) {
+      var url = origCreateObjectURL(obj);
+      try {
+        if (obj && typeof Blob !== 'undefined' && obj instanceof Blob) {
+          if (blobStore.size >= maxBlobs) {
+            var oldest = blobStore.keys().next().value;
+            if (oldest) blobStore.delete(oldest);
+          }
+          blobStore.set(url, obj);
+        }
+      } catch (e) {}
+      return url;
+    };
+  }
+
+  if (origRevokeObjectURL) {
+    URL.revokeObjectURL = function(url) {
+      setTimeout(function() {
+        try { blobStore.delete(url); } catch (e) {}
+        try { origRevokeObjectURL(url); } catch (e) {}
+      }, 30000);
+    };
+  }
+
+  function sendBlobToNative(blob, fileName, mimeType) {
+    var bridge = window.StudioPortalBridge;
+    if (!blob || !bridge) return false;
+    var finalMime = mimeType || blob.type || 'application/octet-stream';
+    var finalName = fileName || '';
+    if (!bridge.beginChunkedFile) {
+      var fallbackReader = new FileReader();
+      fallbackReader.onloadend = function() {
+        bridge.saveBase64File(fallbackReader.result, finalMime, finalName);
+      };
+      fallbackReader.readAsDataURL(blob);
+      return true;
+    }
+    var id = 'sp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 10);
+    if (!bridge.beginChunkedFile(id, finalMime, finalName)) {
+      bridge.onDownloadError('start_error');
+      return true;
+    }
+    var CHUNK = 393216;
+    var offset = 0;
+    function nextChunk() {
+      if (offset >= blob.size) {
+        bridge.finishChunkedFile(id);
+        return;
+      }
+      var slice = blob.slice(offset, Math.min(offset + CHUNK, blob.size));
+      var reader = new FileReader();
+      reader.onloadend = function() {
+        var res = reader.result || '';
+        var idx = res.indexOf('base64,');
+        var payload = idx !== -1 ? res.substring(idx + 7) : res;
+        if (payload && !bridge.appendFileChunk(id, payload)) {
+          if (bridge.cancelChunkedFile) bridge.cancelChunkedFile(id);
+          bridge.onDownloadError('write_error');
+          return;
+        }
+        offset += slice.size;
+        nextChunk();
+      };
+      reader.onerror = function() {
+        if (bridge.cancelChunkedFile) bridge.cancelChunkedFile(id);
+        bridge.onDownloadError('read_error');
+      };
+      reader.readAsDataURL(slice);
+    }
+    nextChunk();
+    return true;
+  }
+
+  function handleAnchorDownload(anchor) {
+    if (!anchor || !window.StudioPortalBridge) return false;
+    var bridge = window.StudioPortalBridge;
+    var rawHref = anchor.getAttribute ? (anchor.getAttribute('href') || '') : '';
+    var href = anchor.href || rawHref;
+    if (!href) return false;
+    var hasDl = anchor.hasAttribute ? anchor.hasAttribute('download') : false;
+    var dlName = anchor.getAttribute ? (anchor.getAttribute('download') || '') : '';
+
+    if (href.indexOf('data:') === 0) {
+      bridge.saveBase64File(href, '', dlName);
+      return true;
+    }
+
+    if (href.indexOf('blob:') === 0) {
+      var cached = blobStore.get(href);
+      if (cached) {
+        return sendBlobToNative(cached, dlName, cached.type || '');
+      }
+      fetch(href).then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.blob();
+      }).then(function(blob) {
+        sendBlobToNative(blob, dlName, blob.type || '');
+      }).catch(function() {
+        bridge.onDownloadError('cross_origin');
+      });
+      return true;
+    }
+
+    if (hasDl && (href.indexOf('https://') === 0 || href.indexOf('http://') === 0)) {
+      if (bridge.downloadRemoteUrl) {
+        bridge.downloadRemoteUrl(href, dlName, window.location.href || '');
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  window.__spSendBlobByUrl = function(blobUrl, fileName, mimeType) {
+    var cached = blobStore.get(blobUrl);
+    if (cached) {
+      return sendBlobToNative(cached, fileName, mimeType || cached.type || '');
+    }
+    fetch(blobUrl).then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.blob();
+    }).then(function(blob) {
+      sendBlobToNative(blob, fileName, mimeType || blob.type || '');
+    }).catch(function() {
+      if (window.StudioPortalBridge) {
+        window.StudioPortalBridge.onDownloadError('cross_origin');
+      }
+    });
+    return true;
+  };
+
+  if (typeof HTMLAnchorElement !== 'undefined' && HTMLAnchorElement.prototype && HTMLAnchorElement.prototype.click) {
+    var origAnchorClick = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function() {
+      try {
+        if (handleAnchorDownload(this)) return;
+      } catch (e) {}
+      return origAnchorClick.apply(this, arguments);
+    };
+  }
+
+  document.addEventListener('click', function(e) {
+    try {
+      var target = e.target;
+      var anchor = target && target.closest ? target.closest('a') : null;
+      if (!anchor) return;
+      var href = anchor.href || '';
+      var hasDl = anchor.hasAttribute && anchor.hasAttribute('download');
+      if (hasDl || href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {
+        if (handleAnchorDownload(anchor)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    } catch (err) {}
+  }, true);
+
+  if (window.open) {
+    var origOpen = window.open;
+    window.open = function(url) {
+      try {
+        if (typeof url === 'string' && window.StudioPortalBridge) {
+          if (url.indexOf('data:') === 0) {
+            window.StudioPortalBridge.saveBase64File(url, '', '');
+            return null;
+          }
+          if (url.indexOf('blob:') === 0 && window.__spSendBlobByUrl) {
+            window.__spSendBlobByUrl(url, '', '');
+            return null;
+          }
+        }
+      } catch (e) {}
+      return origOpen.apply(window, arguments);
+    };
+  }
+})();
+""".trimIndent()
 
 private val AGENT_THINKING_OBSERVER_JS = """
 (function() {
@@ -100,6 +302,9 @@ private val AGENT_THINKING_OBSERVER_JS = """
   var mainHandler = {
     isThinking: false,
     startedAt: 0,
+    lastProgressAt: 0,
+    lastSignature: '',
+    stalledNotified: false,
     finishTimer: null,
     checkScheduled: false
   };
@@ -171,6 +376,21 @@ private val AGENT_THINKING_OBSERVER_JS = """
     }
   }
 
+  function extractProgressSignature() {
+    try {
+      var candidates = document.querySelectorAll('ms-chat-turn, [data-turn-role="model"], ms-thought-chunk, .model-prompt-container');
+      if (candidates && candidates.length > 0) {
+        var last = candidates[candidates.length - 1];
+        var txt = last.innerText || '';
+        return candidates.length + ':' + txt.length + ':' + txt.slice(-40);
+      }
+      var bodyLen = document.body ? (document.body.innerText || '').length : 0;
+      return 'b:' + bodyLen;
+    } catch (e) {
+      return '';
+    }
+  }
+
   function evaluateState() {
     mainHandler.checkScheduled = false;
     var busy = hasStopButton() || hasActiveThinkingIndicator();
@@ -180,11 +400,31 @@ private val AGENT_THINKING_OBSERVER_JS = """
         clearTimeout(mainHandler.finishTimer);
         mainHandler.finishTimer = null;
       }
+      var sig = extractProgressSignature();
       if (!mainHandler.isThinking) {
         mainHandler.isThinking = true;
         mainHandler.startedAt = Date.now();
+        mainHandler.lastProgressAt = Date.now();
+        mainHandler.lastSignature = sig;
+        mainHandler.stalledNotified = false;
         if (window.StudioPortalBridge && window.StudioPortalBridge.onAgentThinkingStarted) {
           window.StudioPortalBridge.onAgentThinkingStarted();
+        }
+      } else {
+        if (sig && sig !== mainHandler.lastSignature) {
+          mainHandler.lastSignature = sig;
+          mainHandler.lastProgressAt = Date.now();
+          if (mainHandler.stalledNotified) {
+            mainHandler.stalledNotified = false;
+            if (window.StudioPortalBridge && window.StudioPortalBridge.onAgentThinkingStarted) {
+              window.StudioPortalBridge.onAgentThinkingStarted();
+            }
+          }
+        } else if (!mainHandler.stalledNotified && (Date.now() - mainHandler.lastProgressAt >= 45000)) {
+          mainHandler.stalledNotified = true;
+          if (window.StudioPortalBridge && window.StudioPortalBridge.onAgentThinkingStalled) {
+            window.StudioPortalBridge.onAgentThinkingStalled();
+          }
         }
       }
     } else if (mainHandler.isThinking && !mainHandler.finishTimer) {
@@ -195,6 +435,7 @@ private val AGENT_THINKING_OBSERVER_JS = """
         }
         var elapsedMs = Date.now() - mainHandler.startedAt;
         mainHandler.isThinking = false;
+        mainHandler.stalledNotified = false;
         if (elapsedMs >= 1000) {
           var seconds = Math.max(1, Math.round(elapsedMs / 1000));
           var preview = extractLatestPreview();
@@ -226,21 +467,153 @@ private val AGENT_THINKING_OBSERVER_JS = """
 """.trimIndent()
 
 private data class PendingSafExport(
-    val bytes: ByteArray,
+    val bytes: ByteArray? = null,
+    val tempFile: File? = null,
     val fileName: String,
     val mimeType: String
+)
+
+private class ActiveChunkedTransfer(
+    val tempFile: File,
+    val out: OutputStream,
+    val mimeType: String,
+    val fileName: String?,
+    var totalBytes: Long = 0L
 )
 
 @Keep
 private class StudioPortalBridge(
     private val context: Context,
+    private val userAgentProvider: () -> String,
     private val onSaved: (String) -> Unit,
     private val onSafExportRequested: (PendingSafExport) -> Unit,
     private val onDownloadFailed: (String) -> Unit,
     private val onThinkingStarted: () -> Unit,
+    private val onThinkingStalled: () -> Unit,
     private val onThinkingFinished: (Int, String?) -> Unit
 ) {
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val transfersLock = Any()
+    private val activeTransfers = ConcurrentHashMap<String, ActiveChunkedTransfer>()
+    private val safeIdRegex = Regex("^[a-zA-Z0-9_-]{1,64}$")
+
+    @Keep
+    @JavascriptInterface
+    fun beginChunkedFile(transferId: String?, mimeType: String?, fileName: String?): Boolean {
+        val id = transferId?.takeIf { safeIdRegex.matches(it) } ?: return false
+        return try {
+            val tmpDir = File(context.cacheDir, "downloads_tmp").apply { mkdirs() }
+            val tempFile = File.createTempFile("sp_dl_", ".part", tmpDir)
+            val stream = BufferedOutputStream(FileOutputStream(tempFile), 64 * 1024)
+            val cleanMime = mimeType?.takeIf { it.isNotBlank() } ?: "application/octet-stream"
+            val transfer = ActiveChunkedTransfer(
+                tempFile = tempFile,
+                out = stream,
+                mimeType = cleanMime,
+                fileName = fileName?.takeIf { it.isNotBlank() }
+            )
+            synchronized(transfersLock) {
+                activeTransfers.remove(id)?.let { prev ->
+                    runCatching { prev.out.close() }
+                    runCatching { prev.tempFile.delete() }
+                }
+                activeTransfers[id] = transfer
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @Keep
+    @JavascriptInterface
+    fun appendFileChunk(transferId: String?, base64Chunk: String?): Boolean {
+        if (transferId.isNullOrBlank() || base64Chunk == null) return false
+        val transfer = synchronized(transfersLock) { activeTransfers[transferId] } ?: return false
+        return try {
+            val decoded = Base64.decode(base64Chunk, Base64.DEFAULT)
+            synchronized(transfer) {
+                if (transfer.totalBytes + decoded.size > MAX_DOWNLOAD_BYTES) {
+                    return false
+                }
+                transfer.out.write(decoded)
+                transfer.totalBytes += decoded.size
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    @Keep
+    @JavascriptInterface
+    fun finishChunkedFile(transferId: String?) {
+        val transfer = if (transferId != null) {
+            synchronized(transfersLock) { activeTransfers.remove(transferId) }
+        } else {
+            null
+        } ?: return
+
+        ioExecutor.execute {
+            try {
+                synchronized(transfer) {
+                    transfer.out.flush()
+                    transfer.out.close()
+                }
+                saveTempFileToDownloads(
+                    context = context,
+                    tempFile = transfer.tempFile,
+                    mimeType = transfer.mimeType,
+                    rawFileName = transfer.fileName,
+                    mainHandler = mainHandler,
+                    onSaved = onSaved,
+                    onSafExportRequested = onSafExportRequested,
+                    onFailed = { onDownloadFailed(context.getString(R.string.download_failed)) }
+                )
+            } catch (_: Exception) {
+                runCatching { transfer.out.close() }
+                runCatching { transfer.tempFile.delete() }
+                mainHandler.post {
+                    onDownloadFailed(context.getString(R.string.download_failed))
+                }
+            }
+        }
+    }
+
+    @Keep
+    @JavascriptInterface
+    fun cancelChunkedFile(transferId: String?) {
+        if (transferId == null) return
+        val transfer = synchronized(transfersLock) { activeTransfers.remove(transferId) } ?: return
+        runCatching { transfer.out.close() }
+        runCatching { transfer.tempFile.delete() }
+    }
+
+    @Keep
+    @JavascriptInterface
+    fun downloadRemoteUrl(url: String?, suggestedName: String?, pageReferer: String?) {
+        if (url.isNullOrBlank() || (!url.startsWith("https://") && !url.startsWith("http://"))) {
+            return
+        }
+        val cleanName = sanitizeFileName(
+            suggestedName?.takeIf { it.isNotBlank() }
+                ?: URLUtil.guessFileName(url, null, null)
+        )
+        mainHandler.post {
+            onDownloadFailed("${context.getString(R.string.download_started)} : $cleanName")
+        }
+        downloadViaHttpUrlConnection(
+            context = context,
+            urlString = url,
+            userAgent = userAgentProvider(),
+            referer = pageReferer,
+            fallbackName = cleanName,
+            fallbackMime = null,
+            mainHandler = mainHandler,
+            onSafExportRequested = onSafExportRequested,
+            onNotify = onDownloadFailed
+        )
+    }
 
     @Keep
     @JavascriptInterface
@@ -291,6 +664,12 @@ private class StudioPortalBridge(
 
     @Keep
     @JavascriptInterface
+    fun onAgentThinkingStalled() {
+        mainHandler.post { onThinkingStalled() }
+    }
+
+    @Keep
+    @JavascriptInterface
     fun onAgentThinkingFinished(durationSeconds: Int, preview: String?) {
         mainHandler.post { onThinkingFinished(durationSeconds, preview) }
     }
@@ -303,6 +682,7 @@ fun StudioWebView(
     isDesktopMode: Boolean,
     textZoomPercent: Int,
     isDarkTheme: Boolean,
+    isAgentThinking: Boolean,
     webCommands: SharedFlow<WebCommand>,
     onPageStarted: (String) -> Unit,
     onPageFinished: (url: String, title: String?, canGoBack: Boolean, canGoForward: Boolean) -> Unit,
@@ -310,6 +690,7 @@ fun StudioWebView(
     onNavigationStateChanged: (canGoBack: Boolean, canGoForward: Boolean, url: String?) -> Unit,
     onMainFrameError: (String?) -> Unit,
     onAgentThinkingStarted: () -> Unit,
+    onAgentThinkingStalled: () -> Unit,
     onAgentThinkingFinished: (durationSeconds: Int, preview: String?) -> Unit,
     onFeedbackMessage: (String) -> Unit,
     modifier: Modifier = Modifier
@@ -320,6 +701,7 @@ fun StudioWebView(
 
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
     var webViewRecoveryKey by remember { mutableIntStateOf(0) }
+    var activeLoadUrl by remember(initialUrl) { mutableStateOf(initialUrl) }
     var appliedDesktopMode by remember { mutableStateOf(isDesktopMode) }
     var pendingFileCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     var pendingSingleFileOnly by remember { mutableStateOf(false) }
@@ -348,11 +730,21 @@ fun StudioWebView(
     ) { destUri ->
         val export = pendingSafExport
         pendingSafExport = null
-        if (destUri != null && export != null) {
+        if (export == null) return@rememberLauncherForActivityResult
+        if (destUri != null) {
             ioExecutor.execute {
                 try {
                     context.contentResolver.openOutputStream(destUri)?.use { out ->
-                        out.write(export.bytes)
+                        when {
+                            export.tempFile != null && export.tempFile.exists() -> {
+                                FileInputStream(export.tempFile).use { input ->
+                                    input.copyTo(out)
+                                }
+                            }
+                            export.bytes != null -> {
+                                out.write(export.bytes)
+                            }
+                        }
                     }
                     StudioNotificationHelper.showDownloadCompletedNotification(
                         context = context,
@@ -367,8 +759,12 @@ fun StudioWebView(
                     mainHandler.post {
                         onFeedbackMessage(context.getString(R.string.download_failed))
                     }
+                } finally {
+                    runCatching { export.tempFile?.delete() }
                 }
             }
+        } else {
+            runCatching { export.tempFile?.delete() }
         }
     }
 
@@ -410,27 +806,75 @@ fun StudioWebView(
 
     LaunchedEffect(webCommands) {
         webCommands.collect { command ->
-            val webView = webViewRef ?: return@collect
+            val webView = webViewRef
             when (command) {
-                is WebCommand.LoadUrl -> webView.loadUrl(command.url)
-                WebCommand.Reload -> webView.reload()
-                WebCommand.GoBack -> if (webView.canGoBack()) webView.goBack()
-                WebCommand.GoForward -> if (webView.canGoForward()) webView.goForward()
+                is WebCommand.LoadUrl -> {
+                    activeLoadUrl = command.url
+                    webView?.loadUrl(command.url)
+                }
+                WebCommand.Reload -> webView?.reload()
+                WebCommand.GoBack -> if (webView?.canGoBack() == true) webView.goBack()
+                WebCommand.GoForward -> if (webView?.canGoForward() == true) webView.goForward()
                 WebCommand.ClearCache -> {
-                    webView.clearCache(true)
-                    webView.clearHistory()
+                    webView?.clearCache(true)
+                    webView?.clearHistory()
                     onFeedbackMessage(context.getString(R.string.cache_cleared))
-                    webView.reload()
+                    webView?.reload()
                 }
                 WebCommand.ResetGoogleSession -> {
                     CookieManager.getInstance().removeAllCookies {
                         CookieManager.getInstance().flush()
                     }
-                    webView.clearCache(true)
-                    webView.clearFormData()
+                    webView?.clearCache(true)
+                    webView?.clearFormData()
+                    activeLoadUrl = StudioSection.STUDIO.url
                     onFeedbackMessage(context.getString(R.string.session_reset))
-                    webView.loadUrl(StudioSection.STUDIO.url)
+                    webView?.loadUrl(StudioSection.STUDIO.url)
                 }
+                WebCommand.RestartWebEngine -> {
+                    val resumeUrl = webView?.url?.takeIf { it.startsWith("https://") } ?: activeLoadUrl
+                    activeLoadUrl = resumeUrl
+                    CookieManager.getInstance().flush()
+                    webViewRef = null
+                    runCatching { webView?.destroy() }
+                    webViewRecoveryKey++
+                    onFeedbackMessage(context.getString(R.string.engine_restarted))
+                }
+            }
+        }
+    }
+
+    DisposableEffect(context) {
+        val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                mainHandler.post {
+                    webViewRef?.setNetworkAvailable(true)
+                    webViewRef?.resumeTimers()
+                    webViewRef?.evaluateJavascript(
+                        "window.dispatchEvent(new Event('online'));",
+                        null
+                    )
+                }
+            }
+
+            override fun onLost(network: Network) {
+                mainHandler.post {
+                    webViewRef?.setNetworkAvailable(false)
+                }
+            }
+        }
+        val registered = runCatching {
+            val request = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            connectivityManager?.registerNetworkCallback(request, callback)
+            true
+        }.getOrDefault(false)
+
+        onDispose {
+            if (registered) {
+                runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
             }
         }
     }
@@ -438,9 +882,14 @@ fun StudioWebView(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_RESUME -> webViewRef?.onResume()
+                Lifecycle.Event.ON_RESUME -> {
+                    // Ensure timers and streaming connections are never left paused after background/dialogs.
+                    webViewRef?.onResume()
+                    webViewRef?.resumeTimers()
+                    webViewRef?.setNetworkAvailable(true)
+                }
                 Lifecycle.Event.ON_PAUSE -> {
-                    webViewRef?.onPause()
+                    // Do NOT call webView.onPause(): pausing Chromium freezes active AI Studio SSE streams mid-thinking.
                     CookieManager.getInstance().flush()
                 }
                 Lifecycle.Event.ON_STOP -> CookieManager.getInstance().flush()
@@ -465,6 +914,10 @@ fun StudioWebView(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
+                    setBackgroundColor(
+                        if (isDarkTheme) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+                    )
+                    keepScreenOn = isAgentThinking
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
                     }
@@ -483,16 +936,30 @@ fun StudioWebView(
                 addJavascriptInterface(
                     StudioPortalBridge(
                         context = ctx,
+                        userAgentProvider = {
+                            if (appliedDesktopMode) DESKTOP_CHROME_USER_AGENT else MOBILE_CHROME_USER_AGENT
+                        },
                         onSaved = { fileName ->
                             onFeedbackMessage(ctx.getString(R.string.download_saved, fileName))
                         },
                         onSafExportRequested = triggerSafExport,
                         onDownloadFailed = onFeedbackMessage,
                         onThinkingStarted = onAgentThinkingStarted,
+                        onThinkingStalled = onAgentThinkingStalled,
                         onThinkingFinished = onAgentThinkingFinished
                     ),
                     "StudioPortalBridge"
                 )
+
+                if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    runCatching {
+                        WebViewCompat.addDocumentStartJavaScript(
+                            this,
+                            DOWNLOAD_INTERCEPTOR_JS,
+                            setOf("*")
+                        )
+                    }
+                }
 
                 setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
                     handleWebDownload(
@@ -540,12 +1007,16 @@ fun StudioWebView(
 
                     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
                         super.onPageStarted(view, url, favicon)
+                        if (url.startsWith("https://")) activeLoadUrl = url
+                        view.evaluateJavascript(DOWNLOAD_INTERCEPTOR_JS, null)
                         onPageStarted(url)
                     }
 
                     override fun onPageFinished(view: WebView, url: String) {
                         super.onPageFinished(view, url)
+                        if (url.startsWith("https://")) activeLoadUrl = url
                         CookieManager.getInstance().flush()
+                        view.evaluateJavascript(DOWNLOAD_INTERCEPTOR_JS, null)
                         if (url.contains("aistudio.google.com")) {
                             view.evaluateJavascript(AGENT_THINKING_OBSERVER_JS, null)
                         }
@@ -554,6 +1025,7 @@ fun StudioWebView(
 
                     override fun doUpdateVisitedHistory(view: WebView, url: String, isReload: Boolean) {
                         super.doUpdateVisitedHistory(view, url, isReload)
+                        if (url.startsWith("https://")) activeLoadUrl = url
                         onNavigationStateChanged(view.canGoBack(), view.canGoForward(), url)
                     }
 
@@ -730,11 +1202,15 @@ fun StudioWebView(
                     }
                 }
 
-                loadUrl(initialUrl)
+                loadUrl(activeLoadUrl)
                 webViewRef = this
             }
         },
         update = { webView ->
+            webView.keepScreenOn = isAgentThinking
+            webView.setBackgroundColor(
+                if (isDarkTheme) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            )
             webView.settings.textZoom = textZoomPercent
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 webView.settings.isAlgorithmicDarkeningAllowed = isDarkTheme
@@ -871,16 +1347,30 @@ private fun createPopupWebView(
         addJavascriptInterface(
             StudioPortalBridge(
                 context = context,
+                userAgentProvider = {
+                    if (isDesktopMode) DESKTOP_CHROME_USER_AGENT else MOBILE_CHROME_USER_AGENT
+                },
                 onSaved = { fileName ->
                     onFeedbackMessage(context.getString(R.string.download_saved, fileName))
                 },
                 onSafExportRequested = onSafExportRequested,
                 onDownloadFailed = onFeedbackMessage,
                 onThinkingStarted = {},
+                onThinkingStalled = {},
                 onThinkingFinished = { _, _ -> }
             ),
             "StudioPortalBridge"
         )
+
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            runCatching {
+                WebViewCompat.addDocumentStartJavaScript(
+                    this,
+                    DOWNLOAD_INTERCEPTOR_JS,
+                    setOf("*")
+                )
+            }
+        }
 
         setDownloadListener { url, userAgent, contentDisposition, mimetype, _ ->
             handleWebDownload(
@@ -894,6 +1384,9 @@ private fun createPopupWebView(
                 onSafExportRequested = onSafExportRequested,
                 onNotify = onFeedbackMessage
             )
+            if (this.url.isNullOrBlank() || this.url == url) {
+                mainHandler.post { onClose() }
+            }
         }
 
         webViewClient = object : WebViewClient() {
@@ -905,9 +1398,15 @@ private fun createPopupWebView(
                 return scheme != "http" && scheme != "https"
             }
 
+            override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+                super.onPageStarted(view, url, favicon)
+                view.evaluateJavascript(DOWNLOAD_INTERCEPTOR_JS, null)
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 super.onPageFinished(view, url)
                 CookieManager.getInstance().flush()
+                view.evaluateJavascript(DOWNLOAD_INTERCEPTOR_JS, null)
                 view.title?.takeIf { it.isNotBlank() }?.let(onTitleChange)
             }
 
@@ -952,11 +1451,16 @@ private fun handleWebDownload(
     val guessedName = resolveFileName(url, contentDisposition, mimeType)
 
     if (url.startsWith("blob:")) {
-        val safeJsName = guessedName.replace("\\", "").replace("'", "")
-        val safeJsMime = (mimeType ?: "").replace("'", "")
+        val jsUrl = JSONObject.quote(url)
+        val jsName = JSONObject.quote(guessedName)
+        val jsMime = JSONObject.quote(mimeType ?: "")
         val script = """
             (function() {
-              fetch('$url').then(function(r) {
+              if (window.__spSendBlobByUrl) {
+                window.__spSendBlobByUrl($jsUrl, $jsName, $jsMime);
+                return;
+              }
+              fetch($jsUrl).then(function(r) {
                 if (!r.ok) throw new Error('HTTP ' + r.status);
                 return r.blob();
               }).then(function(blob) {
@@ -965,8 +1469,8 @@ private fun handleWebDownload(
                   if (window.StudioPortalBridge) {
                     window.StudioPortalBridge.saveBase64File(
                       reader.result,
-                      blob.type || '$safeJsMime',
-                      '$safeJsName'
+                      blob.type || $jsMime,
+                      $jsName
                     );
                   }
                 };
@@ -976,9 +1480,8 @@ private fun handleWebDownload(
                   }
                 };
                 reader.readAsDataURL(blob);
-              }).catch(function(err) {
+              }).catch(function() {
                 if (window.StudioPortalBridge) {
-                  var msg = (err && err.message) ? err.message : '';
                   window.StudioPortalBridge.onDownloadError('cross_origin');
                 }
               });
@@ -1027,35 +1530,11 @@ private fun handleWebDownload(
     if (!url.startsWith("http://") && !url.startsWith("https://")) return
 
     val referer = webView.url
-    val cookie = CookieManager.getInstance().getCookie(url)
-
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        try {
-            val request = DownloadManager.Request(Uri.parse(url)).apply {
-                if (!mimeType.isNullOrBlank()) setMimeType(mimeType)
-                if (!cookie.isNullOrBlank()) addRequestHeader("Cookie", cookie)
-                if (!referer.isNullOrBlank()) addRequestHeader("Referer", referer)
-                addRequestHeader("User-Agent", userAgent)
-                setTitle(guessedName)
-                setDescription("Google AI Studio")
-                setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, guessedName)
-            }
-            val manager = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-            manager.enqueue(request)
-            onNotify("${context.getString(R.string.download_started)} : $guessedName")
-            return
-        } catch (_: Exception) {
-            // Fall through to direct authenticated stream download below
-        }
-    }
-
     onNotify("${context.getString(R.string.download_started)} : $guessedName")
     downloadViaHttpUrlConnection(
         context = context,
         urlString = url,
         userAgent = userAgent,
-        cookie = cookie,
         referer = referer,
         fallbackName = guessedName,
         fallbackMime = mimeType,
@@ -1069,7 +1548,6 @@ private fun downloadViaHttpUrlConnection(
     context: Context,
     urlString: String,
     userAgent: String,
-    cookie: String?,
     referer: String?,
     fallbackName: String,
     fallbackMime: String?,
@@ -1078,41 +1556,85 @@ private fun downloadViaHttpUrlConnection(
     onNotify: (String) -> Unit
 ) {
     ioExecutor.execute {
+        var tempFile: File? = null
         var connection: HttpURLConnection? = null
         try {
-            connection = (URL(urlString).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 20_000
-                readTimeout = 30_000
-                setRequestProperty("User-Agent", userAgent)
-                if (!cookie.isNullOrBlank()) setRequestProperty("Cookie", cookie)
-                if (!referer.isNullOrBlank()) setRequestProperty("Referer", referer)
+            var currentUrl = urlString
+            var currentReferer = referer
+            var redirects = 0
+            val cookieManager = CookieManager.getInstance()
+
+            while (true) {
+                val conn = (URL(currentUrl).openConnection() as HttpURLConnection).apply {
+                    instanceFollowRedirects = false
+                    connectTimeout = 20_000
+                    readTimeout = 60_000
+                    setRequestProperty("User-Agent", userAgent)
+                    val hopCookie = cookieManager.getCookie(currentUrl)
+                    if (!hopCookie.isNullOrBlank()) setRequestProperty("Cookie", hopCookie)
+                    if (!currentReferer.isNullOrBlank()) setRequestProperty("Referer", currentReferer)
+                }
+                connection = conn
+                val code = conn.responseCode
+                if (code in setOf(301, 302, 303, 307, 308)) {
+                    val location = conn.getHeaderField("Location")
+                    conn.disconnect()
+                    connection = null
+                    if (location.isNullOrBlank() || redirects >= 10) {
+                        mainHandler.post { onNotify(context.getString(R.string.download_failed)) }
+                        return@execute
+                    }
+                    val nextUrl = URL(URL(currentUrl), location).toString()
+                    if (!nextUrl.startsWith("https://") && !nextUrl.startsWith("http://")) {
+                        mainHandler.post { onNotify(context.getString(R.string.download_failed)) }
+                        return@execute
+                    }
+                    currentReferer = currentUrl
+                    currentUrl = nextUrl
+                    redirects++
+                    continue
+                }
+                if (code !in 200..299) {
+                    mainHandler.post { onNotify(context.getString(R.string.download_failed)) }
+                    return@execute
+                }
+                break
             }
-            val code = connection.responseCode
-            if (code !in 200..299) {
-                mainHandler.post { onNotify(context.getString(R.string.download_failed)) }
-                return@execute
-            }
-            val serverDisposition = connection.getHeaderField("Content-Disposition")
-            val serverMime = connection.contentType?.substringBefore(';')?.trim()
+
+            val activeConn = connection ?: return@execute
+            val serverDisposition = activeConn.getHeaderField("Content-Disposition")
+            val serverMime = activeConn.contentType?.substringBefore(';')?.trim()
+                ?.takeIf { it.isNotBlank() }
                 ?: fallbackMime
                 ?: "application/octet-stream"
-            val finalName = resolveFileName(urlString, serverDisposition, serverMime)
+            val finalName = resolveFileName(currentUrl, serverDisposition, serverMime)
                 .ifBlank { fallbackName }
 
-            val bytes = connection.inputStream.use { input ->
-                val out = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    out.write(buffer, 0, read)
+            val tmpDir = File(context.cacheDir, "downloads_tmp").apply { mkdirs() }
+            val dlFile = File.createTempFile("sp_http_", ".part", tmpDir)
+            tempFile = dlFile
+
+            activeConn.inputStream.use { input ->
+                BufferedOutputStream(FileOutputStream(dlFile), 64 * 1024).use { out ->
+                    val buffer = ByteArray(16 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        total += read
+                        if (total > MAX_DOWNLOAD_BYTES) {
+                            throw IllegalStateException("Fichier trop volumineux")
+                        }
+                        out.write(buffer, 0, read)
+                    }
+                    out.flush()
                 }
-                out.toByteArray()
             }
 
-            saveBytesToDownloads(
+            tempFile = null
+            saveTempFileToDownloads(
                 context = context,
-                bytes = bytes,
+                tempFile = dlFile,
                 mimeType = serverMime,
                 rawFileName = finalName,
                 mainHandler = mainHandler,
@@ -1123,6 +1645,7 @@ private fun downloadViaHttpUrlConnection(
                 onFailed = { onNotify(context.getString(R.string.download_failed)) }
             )
         } catch (_: Exception) {
+            runCatching { tempFile?.delete() }
             mainHandler.post { onNotify(context.getString(R.string.download_failed)) }
         } finally {
             connection?.disconnect()
@@ -1171,7 +1694,6 @@ private fun saveBytesToDownloads(
                 return
             } catch (_: Exception) {
                 resolver.delete(uri, null, null)
-                // Fall back to SAF document picker below
             }
         }
     }
@@ -1180,6 +1702,65 @@ private fun saveBytesToDownloads(
         onSafExportRequested(
             PendingSafExport(
                 bytes = bytes,
+                fileName = safeName,
+                mimeType = cleanMime
+            )
+        )
+    }
+}
+
+private fun saveTempFileToDownloads(
+    context: Context,
+    tempFile: File,
+    mimeType: String,
+    rawFileName: String?,
+    mainHandler: Handler,
+    onSaved: (String) -> Unit,
+    onSafExportRequested: (PendingSafExport) -> Unit,
+    onFailed: () -> Unit
+) {
+    val cleanMime = mimeType.substringBefore(';').trim().ifBlank { "application/octet-stream" }
+    val safeName = ensureExtension(sanitizeFileName(rawFileName), cleanMime)
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        val resolver = context.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+            put(MediaStore.MediaColumns.MIME_TYPE, cleanMime)
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+            put(MediaStore.MediaColumns.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+        if (uri != null) {
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    FileInputStream(tempFile).use { input ->
+                        input.copyTo(out)
+                    }
+                } ?: throw IllegalStateException("Null output stream")
+                val doneValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.IS_PENDING, 0)
+                }
+                resolver.update(uri, doneValues, null, null)
+                runCatching { tempFile.delete() }
+                StudioNotificationHelper.showDownloadCompletedNotification(
+                    context = context,
+                    fileName = safeName,
+                    contentUri = uri,
+                    mimeType = cleanMime
+                )
+                mainHandler.post { onSaved(safeName) }
+                return
+            } catch (_: Exception) {
+                resolver.delete(uri, null, null)
+            }
+        }
+    }
+
+    mainHandler.post {
+        onSafExportRequested(
+            PendingSafExport(
+                tempFile = tempFile,
                 fileName = safeName,
                 mimeType = cleanMime
             )

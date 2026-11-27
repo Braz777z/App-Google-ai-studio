@@ -28,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material.icons.filled.Key
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CloudOff
 import androidx.compose.material.icons.outlined.Code
+import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Button
@@ -359,6 +361,74 @@ fun StudioErrorOverlay(
                     ) {
                         Text(text = stringResource(R.string.action_retry))
                     }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AgentStallRecoveryBanner(
+    visible: Boolean,
+    onRestartEngine: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn() + slideInVertically { -it },
+        exit = fadeOut() + slideOutVertically { -it },
+        modifier = modifier
+    ) {
+        Surface(
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+                .widthIn(max = 520.dp)
+                .fillMaxWidth(),
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            tonalElevation = 6.dp,
+            shadowElevation = 6.dp
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.HourglassEmpty,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.ai_stalled_title),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = stringResource(R.string.ai_stalled_body),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Button(
+                    onClick = onRestartEngine,
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("stall_restart_engine_button")
+                ) {
+                    Text(text = stringResource(R.string.ai_stalled_restart_button))
+                }
+                IconButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("stall_dismiss_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Close,
+                        contentDescription = stringResource(R.string.action_close)
+                    )
                 }
             }
         }

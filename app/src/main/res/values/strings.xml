@@ -104,7 +104,7 @@
     <string name="compile_step_server">3. Serveur de compilation Gradle</string>
     <string name="compile_server_url_label">URL HTTPS du serveur de compilation</string>
     <string name="compile_server_url_placeholder">https://build.mondomaine.com/compile</string>
-    <string name="compile_server_hint">Android ne pouvant pas exécuter Gradle/SDK localement, l’archive et la signature sont envoyées en HTTPS à votre compilateur Gradle.</string>
+    <string name="compile_server_hint">Optionnel si vous compilez dans Android Studio sur PC : ce champ sert uniquement si vous hébergez le script compilateur Gradle ci-dessous sur un serveur HTTPS.</string>
     <string name="compile_toggle_script">Voir / copier le script serveur (Python + Gradle)</string>
     <string name="compile_copy_script">Copier le script serveur</string>
     <string name="compile_script_copied">Script serveur copié dans le presse-papiers</string>
@@ -114,6 +114,12 @@
     <string name="compile_save_apk_fallback">Enregistrer l’APK (%1$s)</string>
     <string name="compile_saved_keystores_label">Keystores mémorisés :</string>
     <string name="compile_remember_keystore">Mémoriser ce .jks et ces codes (chiffré)</string>
+
+    <string name="ai_stalled_title">L’IA semble figée</string>
+    <string name="ai_stalled_body">Aucune réponse reçue depuis 45 s. Relancez le moteur web sans quitter l’application.</string>
+    <string name="ai_stalled_restart_button">Relancer le moteur</string>
+    <string name="workspace_restart_engine">Relancer le moteur web (débloquer l’IA)</string>
+    <string name="engine_restarted">Moteur web relancé avec votre session</string>
 
     <string name="vault_title">Keystores &amp; codes mémorisés</string>
     <string name="vault_subtitle">Sauvegarde chiffrée de vos .jks, alias et mots de passe pour Android Studio</string>

@@ -60,6 +60,7 @@ import com.example.data.StudioSection
 import com.example.data.ThemePreference
 import com.example.notifications.StudioNotificationHelper
 import com.example.ui.StudioViewModel
+import com.example.ui.components.AgentStallRecoveryBanner
 import com.example.ui.components.CompileApkDialog
 import com.example.ui.components.ImmersiveFloatingPill
 import com.example.ui.components.KeystoreVaultDialog
@@ -310,6 +311,7 @@ fun StudioPortalRoot(
                                 isDesktopMode = uiState.preferences.isDesktopMode,
                                 textZoomPercent = uiState.preferences.textZoomPercent,
                                 isDarkTheme = isDarkTheme,
+                                isAgentThinking = uiState.isAgentThinking,
                                 webCommands = viewModel.webCommands,
                                 onPageStarted = viewModel::onPageStarted,
                                 onPageFinished = viewModel::onPageFinished,
@@ -317,6 +319,7 @@ fun StudioPortalRoot(
                                 onNavigationStateChanged = viewModel::onNavigationStateChanged,
                                 onMainFrameError = viewModel::onMainFrameError,
                                 onAgentThinkingStarted = viewModel::onAgentThinkingStarted,
+                                onAgentThinkingStalled = viewModel::onAgentThinkingStalled,
                                 onAgentThinkingFinished = viewModel::onAgentThinkingFinished,
                                 onFeedbackMessage = viewModel::showStatusMessage
                             )
@@ -327,6 +330,13 @@ fun StudioPortalRoot(
                         StudioProgressBar(
                             isLoading = uiState.isLoading,
                             progress = uiState.loadingProgress,
+                            modifier = Modifier.align(Alignment.TopCenter)
+                        )
+
+                        AgentStallRecoveryBanner(
+                            visible = uiState.isAgentStalled && !uiState.hasError,
+                            onRestartEngine = viewModel::restartWebEngine,
+                            onDismiss = viewModel::dismissStallBanner,
                             modifier = Modifier.align(Alignment.TopCenter)
                         )
 
@@ -414,6 +424,10 @@ fun StudioPortalRoot(
                     onCopyCurrentLink = {
                         copyTextToClipboard(context, uiState.currentUrl)
                         viewModel.showStatusMessage(context.getString(R.string.link_copied))
+                        viewModel.setWorkspaceSheetOpen(false)
+                    },
+                    onRestartWebEngine = {
+                        viewModel.restartWebEngine()
                         viewModel.setWorkspaceSheetOpen(false)
                     },
                     onClearCache = {

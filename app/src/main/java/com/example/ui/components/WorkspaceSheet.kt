@@ -27,6 +27,7 @@ import androidx.compose.material.icons.outlined.Logout
 import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.PushPin
+import androidx.compose.material.icons.outlined.RestartAlt
 import androidx.compose.material.icons.outlined.SystemUpdate
 import androidx.compose.material.icons.outlined.Update
 import androidx.compose.material3.AlertDialog
@@ -96,6 +97,7 @@ fun WorkspaceSheet(
     onOpenCompileDialog: () -> Unit,
     onOpenVaultDialog: () -> Unit,
     onCopyCurrentLink: () -> Unit,
+    onRestartWebEngine: () -> Unit,
     onClearCache: () -> Unit,
     onResetGoogleSession: () -> Unit
 ) {
@@ -707,6 +709,22 @@ fun WorkspaceSheet(
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(text = stringResource(R.string.action_share_link))
+                }
+
+                FilledTonalButton(
+                    onClick = onRestartWebEngine,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .minimumInteractiveComponentSize()
+                        .testTag("workspace_restart_engine_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.RestartAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = stringResource(R.string.workspace_restart_engine))
                 }
 
                 OutlinedButton(

@@ -42,6 +42,7 @@ sealed interface WebCommand {
     data object GoForward : WebCommand
     data object ClearCache : WebCommand
     data object ResetGoogleSession : WebCommand
+    data object RestartWebEngine : WebCommand
 }
 
 data class StudioUiState(
@@ -68,6 +69,7 @@ data class StudioUiState(
     val compileState: ApkCompileState = ApkCompileState.Idle,
     val pendingCompiledApk: CompiledApkResult? = null,
     val isAgentThinking: Boolean = false,
+    val isAgentStalled: Boolean = false,
     val updateCheckState: UpdateCheckState = UpdateCheckState.Idle,
     val statusBannerMessage: String? = null
 )
@@ -129,7 +131,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasError = false,
                 errorDescription = null,
                 isWorkspaceSheetOpen = false,
-                isAgentThinking = false
+                isAgentThinking = false,
+                isAgentStalled = false
             )
         }
         _webCommands.tryEmit(WebCommand.LoadUrl(section.url))
@@ -141,7 +144,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 hasError = false,
                 errorDescription = null,
                 isWorkspaceSheetOpen = false,
-                isAgentThinking = false
+                isAgentThinking = false,
+                isAgentStalled = false
             )
         }
         _webCommands.tryEmit(WebCommand.LoadUrl(url))
@@ -149,7 +153,12 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun requestReload() {
         internalState.update {
-            it.copy(hasError = false, errorDescription = null, isAgentThinking = false)
+            it.copy(
+                hasError = false,
+                errorDescription = null,
+                isAgentThinking = false,
+                isAgentStalled = false
+            )
         }
         _webCommands.tryEmit(WebCommand.Reload)
     }
@@ -170,7 +179,8 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
                 loadingProgress = 15,
                 hasError = false,
                 errorDescription = null,
-                isAgentThinking = false
+                isAgentThinking = false,
+                isAgentStalled = false
             )
         }
     }
@@ -222,11 +232,21 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun onAgentThinkingStarted() {
-        internalState.update { it.copy(isAgentThinking = true) }
+        internalState.update { it.copy(isAgentThinking = true, isAgentStalled = false) }
+    }
+
+    fun onAgentThinkingStalled() {
+        internalState.update { state ->
+            if (state.isAgentThinking) state.copy(isAgentStalled = true) else state
+        }
+    }
+
+    fun dismissStallBanner() {
+        internalState.update { it.copy(isAgentStalled = false) }
     }
 
     fun onAgentThinkingFinished(durationSeconds: Int, preview: String?) {
-        internalState.update { it.copy(isAgentThinking = false) }
+        internalState.update { it.copy(isAgentThinking = false, isAgentStalled = false) }
         val prefs = uiState.value.preferences
         if (!prefs.notificationsEnabled) return
         if (prefs.notifyOnlyInBackground && isAppInForeground) return
@@ -618,6 +638,18 @@ class StudioViewModel(application: Application) : AndroidViewModel(application) 
 
     fun resetGoogleSession() {
         _webCommands.tryEmit(WebCommand.ResetGoogleSession)
+    }
+
+    fun restartWebEngine() {
+        internalState.update {
+            it.copy(
+                hasError = false,
+                errorDescription = null,
+                isAgentThinking = false,
+                isAgentStalled = false
+            )
+        }
+        _webCommands.tryEmit(WebCommand.RestartWebEngine)
     }
 
     fun showStatusMessage(message: String) {
